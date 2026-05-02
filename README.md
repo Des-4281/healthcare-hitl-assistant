@@ -1,3 +1,14 @@
+---
+title: Healthcare HITL SQL Assistant
+emoji: 🏥
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: "6.0.0"
+app_file: app.py
+pinned: false
+---
+
 # Healthcare HITL SQL Assistant
 
 A deployable Gradio/Hugging Face Spaces demo that converts natural-language healthcare data requests into SQL, classifies the request by **semantic intent**, and uses human-in-the-loop approval before risky database operations.
