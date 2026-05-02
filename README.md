@@ -21,11 +21,12 @@ The database is synthetic demo data only.
 - Semantic intent detection instead of purely syntactic keyword classification
 - Human approval for patient data mutations
 - Higher-level AI oversight review for risk, quality, and execution metrics
+- Plain-English Assistant Response after each request explaining the outcome
 - Expanded unsafe SQL policy checks
 - Prompt-injection and approval-bypass detection
 - Sensitive-data request blocking for direct identifiers such as SSNs
 - Bounded public-demo execution to reduce DoS and cost-amplification risk
-- Audit logging for generated SQL, approvals, security flags, risk score, oversight summary, and execution metrics
+- Audit logging for generated SQL, approvals, security flags, risk score, oversight summary, execution metrics, and assistant response summary
 - Hugging Face Spaces deployment with Gradio
 
 ## Security and governance controls
@@ -78,7 +79,13 @@ After classification, a higher-level oversight reviewer evaluates:
 - execution time
 - whether the action should pass, require review, or be blocked
 
-The SQL generator and semantic classifier use `OPENAI_MODEL` (default `gpt-4o-mini`). The oversight reviewer uses `OPENAI_OVERSIGHT_MODEL` (default `gpt-4o`) so a stronger model can be applied to that step without increasing the cost of every request.
+The SQL generator, semantic classifier, and Assistant Response use `OPENAI_MODEL` (default `gpt-4o-mini`). The oversight reviewer uses `OPENAI_OVERSIGHT_MODEL` (default `gpt-4o`) so a stronger model can be applied to that step without increasing the cost of every request.
+
+## Assistant Response layer
+
+After execution and oversight, a separate OpenAI call generates a plain-English explanation of the outcome for the user. It describes what happened (results found, request blocked, approval required, write executed, error encountered) without exposing internal safety rules, SQL query text, system prompts, or row-level patient details.
+
+Assistant Response requires `OPENAI_API_KEY`. If the API key is missing or the call fails, the field shows a short unavailable message — all safety controls continue to operate normally regardless. Model-based oversight fails safely to `REVIEW` or `BLOCK`, never to `PASS`, if the API is unavailable.
 
 ## Files
 
@@ -160,3 +167,4 @@ This is best described as a **healthcare human-in-the-loop data assistant with s
 - auditability
 - post-decision oversight
 - tiered model usage (lighter model for generation, stronger model for oversight)
+- user-facing plain-English response after each request
