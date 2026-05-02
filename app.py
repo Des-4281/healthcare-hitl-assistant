@@ -585,7 +585,7 @@ def deterministic_semantic_classification(user_query: str, sql: str) -> Dict[str
     q = user_query.lower()
     sql_upper = " ".join(sql.upper().split())
     unsafe_hit, unsafe_reason = has_unsafe_sql_pattern(sql)
-    sensitive_hit, sensitive_reason = contains_sensitive_sql(sql)
+    sensitive_hit, _ = contains_sensitive_sql(sql)
     injection_hits = detect_prompt_injection(user_query)
     statements = [stmt.strip() for stmt in sql.split(";") if stmt.strip()]
 
@@ -625,13 +625,18 @@ def deterministic_semantic_classification(user_query: str, sql: str) -> Dict[str
             "reason": "Blocked because the user's intent appears destructive or attempts to bypass controls.",
         }
 
-    if sensitive_hit and (any(term in q for term in SENSITIVE_INTENT_TERMS) or "SSN" in sql_upper):
+    # Block SSN/sensitive identifier exposure only for read queries or explicit sensitive-data requests.
+    # Write SQL (INSERT/UPDATE/DELETE) that includes SSN as a schema column is a normal operation
+    # and should be routed to WRITE/PENDING APPROVAL, not blocked as UNSAFE.
+    is_write_sql = re.search(WRITE_SQL_PATTERN, sql_upper) is not None
+    ssn_in_intent = any(term in q for term in SENSITIVE_INTENT_TERMS)
+    if sensitive_hit and (ssn_in_intent or not is_write_sql):
         return {
             "query_type": "UNSAFE",
             "semantic_intent": "sensitive identifier access",
             "risk_score": 0.92,
             "requires_human_review": False,
-            "reason": f"Blocked because the request appears to retrieve direct identifiers. {sensitive_reason}",
+            "reason": "Blocked because the request appears to retrieve or expose sensitive identifiers.",
         }
 
     if re.search(r"\bUPDATE\b", sql_upper) and not re.search(r"\bWHERE\b", sql_upper):
