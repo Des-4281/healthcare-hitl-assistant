@@ -78,7 +78,7 @@ After classification, a higher-level oversight reviewer evaluates:
 - execution time
 - whether the action should pass, require review, or be blocked
 
-The app still works without an OpenAI key using deterministic fallback logic. With an OpenAI key, the SQL generator, semantic classifier, and oversight reviewer use the configured model.
+The SQL generator and semantic classifier use `OPENAI_MODEL` (default `gpt-4o-mini`). The oversight reviewer uses `OPENAI_OVERSIGHT_MODEL` (default `gpt-4o`) so a stronger model can be applied to that step without increasing the cost of every request.
 
 ## Files
 
@@ -115,21 +115,23 @@ README.md
 
 Hugging Face will install the requirements and run `app.py`.
 
-## Optional environment variables
+## Environment variables
 
-For deterministic demo mode, no API key is required.
+`OPENAI_API_KEY` is required. Without it the app returns a configuration error instead of processing requests.
 
-For AI-powered SQL generation, semantic classification, and oversight review, add this secret in Hugging Face:
-
-```text
-OPENAI_API_KEY=your_key_here
-```
-
-Optional:
+The following are optional:
 
 ```text
 OPENAI_MODEL=gpt-4o-mini
 ```
+
+Controls the model used for SQL generation and semantic classification.
+
+```text
+OPENAI_OVERSIGHT_MODEL=gpt-4o
+```
+
+Controls the model used for the AI oversight reviewer. Defaults to `gpt-4o` so the oversight step can use a stronger model independently of the generation step.
 
 ## Example prompts
 
@@ -157,4 +159,4 @@ This is best described as a **healthcare human-in-the-loop data assistant with s
 - bounded resource usage
 - auditability
 - post-decision oversight
-- deterministic fallback behavior
+- tiered model usage (lighter model for generation, stronger model for oversight)

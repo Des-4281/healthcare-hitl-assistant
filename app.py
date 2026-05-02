@@ -38,6 +38,11 @@ REQUEST_COOLDOWN_SECONDS = 4.0
 MAX_BLOCKED_REQUESTS_PER_SESSION = 5
 GRADIO_QUEUE_MAX_SIZE = 20
 GRADIO_CONCURRENCY_LIMIT = 1
+NO_API_KEY_MSG = (
+    "### Configuration Error\n\n"
+    "`OPENAI_API_KEY` is not set. "
+    "Add the environment variable to enable this assistant."
+)
 
 
 SCHEMA_CONTEXT = """
@@ -412,56 +417,6 @@ def clean_sql(sql: str) -> str:
     return sql
 
 
-def fallback_sql(user_query: str) -> str:
-    """Small deterministic fallback so the demo still works without an API key."""
-    q = user_query.lower()
-
-    if any(word in q for word in ["drop", "truncate", "alter", "destroy", "wipe"]):
-        return "DROP TABLE patients;"
-
-    if "delete" in q and "emily" in q:
-        return "DELETE FROM patients WHERE FIRST = 'Emily' AND LAST = 'Chen';"
-
-    if any(word in q for word in ["add", "insert", "create new patient", "new patient"]) and "emily" in q:
-        return """
-        INSERT INTO patients
-        (Id, BIRTHDATE, DEATHDATE, SSN, FIRST, LAST, MARITAL, RACE, ETHNICITY, GENDER, CITY, STATE, HEALTHCARE_EXPENSES, HEALTHCARE_COVERAGE)
-        VALUES ('P999', '1992-05-18', NULL, '000-00-0999', 'Emily', 'Chen', 'S', 'asian', 'nonhispanic', 'F', 'Rockville', 'MD', 0, 0);
-        """.strip()
-
-    if "count" in q or "how many" in q:
-        return "SELECT COUNT(*) AS patient_count FROM patients LIMIT 100;"
-
-    if "cancer" in q or "oncology" in q:
-        return """
-        SELECT p.Id, p.FIRST, p.LAST, c.DESCRIPTION AS condition, c.START AS condition_start,
-               m.DESCRIPTION AS medication, m.START AS medication_start
-        FROM patients p
-        JOIN conditions c ON p.Id = c.PATIENT
-        LEFT JOIN medications m ON p.Id = m.PATIENT
-        WHERE c.DESCRIPTION LIKE '%cancer%'
-           OR c.DESCRIPTION LIKE '%neoplasm%'
-           OR c.DESCRIPTION LIKE '%malignant%'
-           OR c.DESCRIPTION LIKE '%tumor%'
-        LIMIT 100;
-        """.strip()
-
-    if "john" in q or "smith" in q or "history" in q:
-        return """
-        SELECT p.Id, p.FIRST, p.LAST, p.BIRTHDATE, c.DESCRIPTION AS condition,
-               c.START AS condition_start, m.DESCRIPTION AS medication, e.DESCRIPTION AS encounter
-        FROM patients p
-        LEFT JOIN conditions c ON p.Id = c.PATIENT
-        LEFT JOIN medications m ON p.Id = m.PATIENT
-        LEFT JOIN encounters e ON p.Id = e.PATIENT
-        WHERE p.FIRST = 'John' AND p.LAST = 'Smith'
-        LIMIT 100;
-        """.strip()
-
-    return "SELECT Id, FIRST, LAST, BIRTHDATE, GENDER, CITY, STATE FROM patients LIMIT 100;"
-
-
-
 def detect_prompt_injection(user_query: str) -> List[str]:
     """Detect common prompt-injection and policy-bypass attempts."""
     hits = []
@@ -581,21 +536,15 @@ def get_openai_client() -> Any:
 
 def generate_sql(user_query: str) -> str:
     client = get_openai_client()
-    if client is None:
-        return fallback_sql(user_query)
-
-    try:
-        response = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            temperature=0,
-            messages=[
-                {"role": "system", "content": SCHEMA_CONTEXT},
-                {"role": "user", "content": user_query},
-            ],
-        )
-        return clean_sql(response.choices[0].message.content or "")
-    except Exception:
-        return fallback_sql(user_query)
+    response = client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        temperature=0,
+        messages=[
+            {"role": "system", "content": SCHEMA_CONTEXT},
+            {"role": "user", "content": user_query},
+        ],
+    )
+    return clean_sql(response.choices[0].message.content or "")
 
 
 def has_unsafe_sql_pattern(sql: str) -> Tuple[bool, str]:
@@ -716,49 +665,42 @@ def parse_json_object(text: str) -> Dict[str, Any]:
 
 def classify_query_semantic(user_query: str, sql: str) -> Dict[str, Any]:
     """Classify by meaning first, then enforce hard safety rules as a backstop."""
-    fallback = deterministic_semantic_classification(user_query, sql)
+    deterministic = deterministic_semantic_classification(user_query, sql)
     client = get_openai_client()
-    if client is None:
-        return fallback
+    response = client.chat.completions.create(
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        temperature=0,
+        messages=[
+            {"role": "system", "content": SEMANTIC_CLASSIFIER_CONTEXT},
+            {"role": "user", "content": f"User request:\n{user_query}\n\nGenerated SQL:\n{sql}"},
+        ],
+    )
+    llm_result = parse_json_object(response.choices[0].message.content or "{}")
 
-    try:
-        response = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            temperature=0,
-            messages=[
-                {"role": "system", "content": SEMANTIC_CLASSIFIER_CONTEXT},
-                {"role": "user", "content": f"User request:\n{user_query}\n\nGenerated SQL:\n{sql}"},
-            ],
-        )
-        llm_result = parse_json_object(response.choices[0].message.content or "{}")
-    except Exception:
-        return fallback
-
-    # Validate and normalize the LLM result.
-    query_type = str(llm_result.get("query_type", fallback["query_type"])).upper()
+    query_type = str(llm_result.get("query_type", deterministic["query_type"])).upper()
     if query_type not in {"READ", "WRITE", "UNSAFE"}:
-        query_type = fallback["query_type"]
+        query_type = deterministic["query_type"]
 
-    risk_score = float(llm_result.get("risk_score", fallback["risk_score"]))
+    risk_score = float(llm_result.get("risk_score", deterministic["risk_score"]))
     risk_score = max(0.0, min(1.0, risk_score))
 
     result = {
         "query_type": query_type,
-        "semantic_intent": str(llm_result.get("semantic_intent", fallback["semantic_intent"])),
+        "semantic_intent": str(llm_result.get("semantic_intent", deterministic["semantic_intent"])),
         "risk_score": risk_score,
         "requires_human_review": bool(llm_result.get("requires_human_review", query_type == "WRITE")),
-        "reason": str(llm_result.get("reason", fallback["reason"])),
+        "reason": str(llm_result.get("reason", deterministic["reason"])),
     }
 
     # Hard safety layer can only increase strictness.
     unsafe_hit, unsafe_reason = has_unsafe_sql_pattern(sql)
-    if unsafe_hit or fallback["query_type"] == "UNSAFE":
+    if unsafe_hit or deterministic["query_type"] == "UNSAFE":
         result.update(
             {
                 "query_type": "UNSAFE",
                 "requires_human_review": False,
-                "risk_score": max(result["risk_score"], fallback["risk_score"]),
-                "reason": unsafe_reason if unsafe_hit else fallback["reason"],
+                "risk_score": max(result["risk_score"], deterministic["risk_score"]),
+                "reason": unsafe_reason if unsafe_hit else deterministic["reason"],
             }
         )
 
@@ -820,23 +762,7 @@ def run_oversight_review(
     execution_metrics: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     execution_metrics = execution_metrics or {}
-    fallback_decision = "BLOCK" if classification["query_type"] == "UNSAFE" else "REVIEW" if classification["query_type"] == "WRITE" else "PASS"
-    fallback = {
-        "oversight_decision": fallback_decision,
-        "quality_score": 0.85 if fallback_decision == "PASS" else 0.65 if fallback_decision == "REVIEW" else 0.15,
-        "metric_analysis": (
-            f"Risk score {classification.get('risk_score', 0):.2f}; "
-            f"status {approval_status}; "
-            f"rows returned {execution_metrics.get('rows_returned', 0)}; "
-            f"rows affected {execution_metrics.get('rows_affected', 0)}."
-        ),
-        "recommendation": "Proceed." if fallback_decision == "PASS" else "Keep human review in the loop." if fallback_decision == "REVIEW" else "Do not execute.",
-    }
-
     client = get_openai_client()
-    if client is None:
-        return fallback
-
     try:
         payload = {
             "user_query": user_query,
@@ -847,7 +773,7 @@ def run_oversight_review(
             "execution_metrics": execution_metrics,
         }
         response = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            model=os.getenv("OPENAI_OVERSIGHT_MODEL", "gpt-4o"),
             temperature=0,
             messages=[
                 {"role": "system", "content": OVERSIGHT_CONTEXT},
@@ -856,21 +782,26 @@ def run_oversight_review(
         )
         result = parse_json_object(response.choices[0].message.content or "{}")
     except Exception:
-        return fallback
+        return {
+            "oversight_decision": "REVIEW",
+            "quality_score": 0.0,
+            "metric_analysis": "Oversight review unavailable.",
+            "recommendation": "Manual review required.",
+        }
 
-    decision = str(result.get("oversight_decision", fallback["oversight_decision"])).upper()
+    decision = str(result.get("oversight_decision", "REVIEW")).upper()
     if decision not in {"PASS", "REVIEW", "BLOCK"}:
-        decision = fallback["oversight_decision"]
+        decision = "REVIEW"
     if classification["query_type"] == "UNSAFE":
         decision = "BLOCK"
 
-    quality_score = float(result.get("quality_score", fallback["quality_score"]))
+    quality_score = float(result.get("quality_score", 0.0))
     quality_score = max(0.0, min(1.0, quality_score))
     return {
         "oversight_decision": decision,
         "quality_score": quality_score,
-        "metric_analysis": str(result.get("metric_analysis", fallback["metric_analysis"])),
-        "recommendation": str(result.get("recommendation", fallback["recommendation"])),
+        "metric_analysis": str(result.get("metric_analysis", "")),
+        "recommendation": str(result.get("recommendation", "")),
     }
 
 
@@ -946,6 +877,9 @@ def submit_query(user_query: str, session_security: Dict[str, Any]) -> Tuple[str
     if not user_query or not user_query.strip():
         empty = pd.DataFrame()
         return "Enter a request first.", "", empty, "", security_dashboard_markdown(session_security), {}, gr.update(visible=False), session_security
+
+    if not os.getenv("OPENAI_API_KEY") or OpenAI is None:
+        return NO_API_KEY_MSG, "", pd.DataFrame(), "", security_dashboard_markdown(session_security), {}, gr.update(visible=False), session_security
 
     allowed, limit_reason, session_security, resource_flags = check_request_resource_limits(user_query, session_security)
     if not allowed:
