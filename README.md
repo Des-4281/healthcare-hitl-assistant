@@ -83,7 +83,7 @@ The SQL generator, semantic classifier, and Assistant Response use `OPENAI_MODEL
 
 ## Assistant Response layer
 
-After execution and oversight, a separate OpenAI call generates a plain-English explanation of the outcome for the user. It describes what happened (results found, request blocked, approval required, write executed, error encountered) without exposing internal safety rules, SQL query text, system prompts, or row-level patient details.
+After execution and oversight, a separate OpenAI call generates a plain-English report of the outcome for the user. For successful read queries, the report synthesizes and interprets the returned data — summarizing conditions, medications, and clinical patterns rather than just stating a row count. For blocked, pending, or error outcomes it gives a concise explanation of what happened and what the user can do next. SSNs and internal identifiers are stripped before the data reaches this layer. Internal safety rules, SQL query text, system prompts, and risk scores are never exposed in the response.
 
 Assistant Response requires `OPENAI_API_KEY`. If the API key is missing or the call fails, the field shows a short unavailable message — all safety controls continue to operate normally regardless. Model-based oversight fails safely to `REVIEW` or `BLOCK`, never to `PASS`, if the API is unavailable.
 
